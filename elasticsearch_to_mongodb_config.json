@@ -1,0 +1,56 @@
+{
+  "source": {
+    "addresses": ["http://localhost:9200"],
+    "username": "",
+    "password": "",
+    "apiKey": "OVlITUdaWUJIb0E4TUdUZlFGaEQ6RXpUSmVfN0VRNTJOUTdUYTl0dGNIdw==",
+    "indices": ["my-index"]
+  },
+  "target": {
+    "connectionString": "mongodb://localhost:27017/?replicaSet=rs0",
+    "database": "es_migration"
+  },
+  "indexMappings": [
+    {
+      "sourceIndex": "my-index",
+      "targetCollection": "my_collection",
+      "indexPatternType": "exact"
+    }
+  ],
+  "defaultMapping": {
+    "type": "direct"
+  },
+  "documentMapping": {
+    "idField": "_id",
+    "idType": "string",
+    "includeMetadata": true,
+    "metadataPrefix": "es_",
+    "dateFormat": "strict_date_optional_time",
+    "fieldMappings": [
+      {
+        "sourceField": "created_at",
+        "targetField": "created_at",
+        "type": "date"
+      },
+      {
+        "sourceField": "location",
+        "targetField": "geo_location",
+        "type": "geo_point"
+      }
+    ],
+    "excludeFields": ["_score", "_type"]
+  },
+  "readBatchSize": 1000,
+  "writeBatchSize": 100,
+  "channelBufferSize": 10,
+  "migrationWorkers": 5,
+  "concurrentIndices": 2,
+  "retryConfig": {
+    "maxRetries": 5,
+    "baseDelayMs": 100,
+    "maxDelayMs": 5000,
+    "enableBatchSplitting": true,
+    "minBatchSize": 10,
+    "convertInvalidIds": true
+  }
+}
