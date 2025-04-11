@@ -3,7 +3,7 @@
     "addresses": ["http://localhost:9200"],
     "username": "",
     "password": "",
-    "apiKey": "OVlITUdaWUJIb0E4TUdUZlFGaEQ6RXpUSmVfN0VRNTJOUTdUYTl0dGNIdw==",
+    "apiKey": "",
     "indices": ["my-index"]
   },
   "target": {
