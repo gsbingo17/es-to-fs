@@ -81,6 +81,7 @@ Here's a basic example:
   "channelBufferSize": 10,
   "migrationWorkers": 5,
   "concurrentIndices": 2,
+  "slicedScrollCount": 4,
   "retryConfig": {
     "maxRetries": 5,
     "baseDelayMs": 100,
@@ -98,7 +99,12 @@ Here's a basic example:
 - **addresses**: Array of Elasticsearch server addresses.
 - **username**: Elasticsearch username (if authentication is required).
 - **password**: Elasticsearch password (if authentication is required).
+- **apiKey**: Elasticsearch API key (alternative to username/password).
 - **indices**: Array of index names or patterns to migrate.
+- **tls**: Enable TLS/HTTPS (default: false).
+- **caCertPath**: Path to CA certificate file for server verification.
+- **skipVerify**: Skip server certificate verification (not recommended for production).
+- **certificateFingerprint**: Certificate fingerprint for verification (SHA256 hex fingerprint).
 
 ### Target Configuration
 - **connectionString**: MongoDB connection string.
@@ -263,6 +269,7 @@ Benefits of proper conversion:
 - **channelBufferSize**: Size of the channel buffer for batches.
 - **migrationWorkers**: Number of worker goroutines for batch processing.
 - **concurrentIndices**: Number of indices to process concurrently.
+- **slicedScrollCount**: Number of slices for parallel reading within a single index (default: 4).
 
 ### Retry Configuration
 - **retryConfig**: Configuration for retry mechanisms.
@@ -335,7 +342,13 @@ The application implements parallelism at multiple levels:
    - Multiple indices are processed concurrently
    - Controlled by the `concurrentIndices` parameter
 
-2. **Batch-Level Parallelism**:
+2. **Intra-Index Parallelism (Sliced Scroll)**:
+   - Each index is divided into multiple slices that are read in parallel
+   - Uses Elasticsearch's built-in sliced scroll feature
+   - Controlled by the `slicedScrollCount` parameter
+   - Significantly improves read performance for large indices
+
+3. **Batch-Level Parallelism**:
    - Documents are processed in batches by multiple workers
    - Controlled by the `migrationWorkers` parameter
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gsbingo17/es-to-mongodb/pkg/es"
+	"github.com/gsbingo17/es-to-mongodb/pkg/common"
 )
 
 // Config represents the main configuration structure
@@ -23,7 +23,7 @@ type Config struct {
 	DefaultMapping DefaultMapping `json:"defaultMapping"`
 
 	// Document mapping configuration
-	DocumentMapping es.MappingConfig `json:"documentMapping"`
+	DocumentMapping common.MappingConfig `json:"documentMapping"`
 
 	// Parameters for migration
 	ReadBatchSize     int `json:"readBatchSize"`     // Number of documents to read in a batch during migration
@@ -31,6 +31,7 @@ type Config struct {
 	ChannelBufferSize int `json:"channelBufferSize"` // Size of channel buffer for batches during migration
 	MigrationWorkers  int `json:"migrationWorkers"`  // Number of worker goroutines for batch processing
 	ConcurrentIndices int `json:"concurrentIndices"` // Number of indices to process concurrently
+	SlicedScrollCount int `json:"slicedScrollCount"` // Number of slices for parallel scrolling within a single index
 
 	// Retry configuration
 	RetryConfig RetryConfig `json:"retryConfig"` // Configuration for retry mechanisms
@@ -53,6 +54,12 @@ type SourceConfig struct {
 	Password  string   `json:"password"`  // Elasticsearch password
 	APIKey    string   `json:"apiKey"`    // Elasticsearch API key (alternative to username/password)
 	Indices   []string `json:"indices"`   // Indices to migrate (can use patterns like "my-index-*")
+
+	// HTTPS configuration
+	TLS                    bool   `json:"tls"`                    // Enable TLS/HTTPS (default: false)
+	CACertPath             string `json:"caCertPath"`             // Path to CA certificate file for server verification
+	SkipVerify             bool   `json:"skipVerify"`             // Skip server certificate verification (not recommended for production)
+	CertificateFingerprint string `json:"certificateFingerprint"` // Certificate fingerprint for verification
 }
 
 // TargetConfig represents the target MongoDB configuration
@@ -121,6 +128,11 @@ func LoadConfig(configPath string) (*Config, error) {
 		config.ConcurrentIndices = 4 // Default to 4 concurrent indices
 	}
 
+	// Set default value for sliced scroll
+	if config.SlicedScrollCount <= 0 {
+		config.SlicedScrollCount = 4 // Default to 4 slices per index
+	}
+
 	// Set default values for retry configuration
 	if config.RetryConfig.MaxRetries <= 0 {
 		config.RetryConfig.MaxRetries = 5 // Default to 5 retries
@@ -161,6 +173,16 @@ func validateConfig(config *Config) error {
 
 	if len(config.Source.Indices) == 0 {
 		return fmt.Errorf("at least one Elasticsearch index is required")
+	}
+
+	// Validate TLS configuration
+	if config.Source.TLS {
+		// Check if certificate files exist if paths are provided
+		if config.Source.CACertPath != "" {
+			if _, err := os.Stat(config.Source.CACertPath); os.IsNotExist(err) {
+				return fmt.Errorf("CA certificate file not found at path: %s", config.Source.CACertPath)
+			}
+		}
 	}
 
 	// Validate target config

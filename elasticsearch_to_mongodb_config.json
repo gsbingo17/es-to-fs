@@ -4,7 +4,11 @@
     "username": "",
     "password": "",
     "apiKey": "",
-    "indices": ["my-index"]
+    "indices": ["my-index"],
+    "tls": false,
+    "caCertPath": "",
+    "skipVerify": false,
+    "certificateFingerprint": ""
   },
   "target": {
     "connectionString": "mongodb://localhost:27017/?replicaSet=rs0",
@@ -13,7 +17,7 @@
   "indexMappings": [
     {
       "sourceIndex": "my-index",
-      "targetCollection": "my_collection",
+      "targetCollection": "my-index",
       "indexPatternType": "exact"
     }
   ],
@@ -41,10 +45,11 @@
     "excludeFields": ["_score", "_type"]
   },
   "readBatchSize": 1000,
-  "writeBatchSize": 100,
+  "writeBatchSize": 128,
   "channelBufferSize": 10,
   "migrationWorkers": 5,
   "concurrentIndices": 2,
+  "slicedScrollCount": 4,
   "retryConfig": {
     "maxRetries": 5,
     "baseDelayMs": 100,

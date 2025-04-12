@@ -2,8 +2,12 @@ package es
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -18,23 +22,71 @@ type ElasticsearchClient struct {
 	log    *logger.Logger
 }
 
+// TLSConfig represents TLS configuration for Elasticsearch
+type TLSConfig struct {
+	Enabled                bool   // Enable TLS/HTTPS
+	CACertPath             string // Path to CA certificate file
+	SkipVerify             bool   // Skip server certificate verification
+	CertificateFingerprint string // Certificate fingerprint for verification
+}
+
 // NewElasticsearchClient creates a new Elasticsearch client
-func NewElasticsearchClient(addresses []string, username, password, apiKey string, log *logger.Logger) (*ElasticsearchClient, error) {
-	// Create Elasticsearch configuration
+func NewElasticsearchClient(addresses []string, username, password, apiKey string, tlsConfig *TLSConfig, log *logger.Logger) (*ElasticsearchClient, error) {
+	// Create Elasticsearch configuration using the correct Config struct definition
 	cfg := elasticsearch.Config{
 		Addresses: addresses,
+		Username:  username,
+		Password:  password,
+		APIKey:    apiKey,
 	}
 
-	// Set authentication - prefer API key if provided, otherwise use username/password
+	// Log authentication method
 	if apiKey != "" {
-		cfg.APIKey = apiKey
 		log.Info("Using API key authentication for Elasticsearch")
 	} else if username != "" && password != "" {
-		cfg.Username = username
-		cfg.Password = password
 		log.Info("Using username/password authentication for Elasticsearch")
 	} else {
 		log.Info("No authentication provided for Elasticsearch")
+	}
+
+	// Configure TLS if enabled
+	if tlsConfig != nil && tlsConfig.Enabled {
+		log.Info("Configuring TLS for Elasticsearch connection")
+
+		// Create TLS configuration
+		tlsClientConfig := &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: tlsConfig.SkipVerify,
+		}
+
+		// Load CertificateFingerprint if provided in TLSConfig
+		if tlsConfig.CertificateFingerprint != "" {
+			cfg.CertificateFingerprint = tlsConfig.CertificateFingerprint
+		}
+
+		// Load CA certificate if provided
+		if tlsConfig.CACertPath != "" {
+			caCert, err := os.ReadFile(tlsConfig.CACertPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+			}
+
+			cfg.CACert = caCert
+			log.Info("Added CA certificate to configuration")
+		}
+
+		// Create transport with TLS configuration
+		transport := &http.Transport{
+			MaxIdleConnsPerHost:   10,
+			ResponseHeaderTimeout: time.Second,
+			DialContext:           (&net.Dialer{Timeout: time.Second}).DialContext,
+			TLSClientConfig:       tlsClientConfig,
+		}
+
+		// Set transport in the config
+		cfg.Transport = transport
+
+		log.Info("TLS configuration completed")
 	}
 
 	// Create Elasticsearch client
@@ -226,6 +278,82 @@ func (e *ElasticsearchClient) ScrollDocuments(ctx context.Context, index string,
 	return iterator, nil
 }
 
+// ScrollDocumentsSliced scrolls through documents in an index using sliced scrolling for parallel processing
+func (e *ElasticsearchClient) ScrollDocumentsSliced(ctx context.Context, index string, batchSize int, scrollTime string, sliceID, maxSlices int) (*ScrollIterator, error) {
+	// Create the sliced query
+	sliceQuery := fmt.Sprintf(`{
+		"slice": {
+			"id": %d,
+			"max": %d
+		},
+		"query": {"match_all": {}}
+	}`, sliceID, maxSlices)
+
+	// Use the low-level API to perform a search with scroll
+	req := esapi.SearchRequest{
+		Index: []string{index},
+		Size:  &batchSize,
+		Body:  strings.NewReader(sliceQuery),
+	}
+
+	// Convert scrollTime string to time.Duration
+	scrollDuration, err := time.ParseDuration(scrollTime)
+	if err != nil {
+		// If parsing fails, use a default duration of 5 minutes
+		scrollDuration = 5 * time.Minute
+		e.log.Warnf("Failed to parse scroll time '%s', using default of 5m: %v", scrollTime, err)
+	}
+	req.Scroll = scrollDuration
+
+	// Execute the request
+	res, err := req.Do(ctx, e.client)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search documents with slice %d/%d: %w", sliceID, maxSlices, err)
+	}
+
+	if res.IsError() {
+		defer res.Body.Close()
+		return nil, fmt.Errorf("failed to search documents with slice %d/%d: %s", sliceID, maxSlices, res.String())
+	}
+
+	// Parse the response
+	var searchResponse map[string]interface{}
+	if err := json.NewDecoder(res.Body).Decode(&searchResponse); err != nil {
+		defer res.Body.Close()
+		return nil, fmt.Errorf("failed to decode search response for slice %d/%d: %w", sliceID, maxSlices, err)
+	}
+	res.Body.Close()
+
+	// Get scroll ID
+	scrollID, ok := searchResponse["_scroll_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("failed to get scroll ID from response for slice %d/%d", sliceID, maxSlices)
+	}
+
+	// Get total hits for this slice
+	totalHits := int64(searchResponse["hits"].(map[string]interface{})["total"].(map[string]interface{})["value"].(float64))
+	e.log.Infof("Slice %d/%d has %d documents", sliceID, maxSlices, totalHits)
+
+	// Create scroll iterator
+	iterator := &ScrollIterator{
+		client:         e.client,
+		scrollID:       scrollID,
+		scrollTime:     scrollTime,
+		scrollDuration: scrollDuration,
+		currentBatch:   searchResponse,
+		currentIndex:   0,
+		batchSize:      batchSize,
+		log:            e.log,
+		ctx:            ctx,
+		totalHits:      totalHits,
+		processedHits:  0,
+		sliceID:        sliceID,
+		maxSlices:      maxSlices,
+	}
+
+	return iterator, nil
+}
+
 // ScrollIterator iterates through documents in a scroll
 type ScrollIterator struct {
 	client         *elasticsearch.Client
@@ -239,6 +367,8 @@ type ScrollIterator struct {
 	ctx            context.Context
 	totalHits      int64
 	processedHits  int64
+	sliceID        int // For sliced scrolling
+	maxSlices      int // For sliced scrolling
 }
 
 // Next returns the next document in the scroll
