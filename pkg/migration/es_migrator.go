@@ -36,11 +36,25 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 
 	// Connect to Elasticsearch
 	m.log.Infof("Connecting to Elasticsearch at %v", m.config.Source.Addresses)
+
+	// Create TLS configuration if TLS is enabled
+	var tlsConfig *es.TLSConfig
+	if m.config.Source.TLS {
+		tlsConfig = &es.TLSConfig{
+			Enabled:                true,
+			CACertPath:             m.config.Source.CACertPath,
+			SkipVerify:             m.config.Source.SkipVerify,
+			CertificateFingerprint: m.config.Source.CertificateFingerprint,
+		}
+		m.log.Info("TLS is enabled for Elasticsearch connection")
+	}
+
 	esClient, err := es.NewElasticsearchClient(
 		m.config.Source.Addresses,
 		m.config.Source.Username,
 		m.config.Source.Password,
 		m.config.Source.APIKey,
+		tlsConfig,
 		m.log,
 	)
 	if err != nil {
@@ -141,14 +155,6 @@ func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.Elasticsearc
 		m.log,
 	)
 
-	// Create scroll iterator
-	scrollTime := "5m" // 5 minutes scroll time
-	iterator, err := esClient.ScrollDocuments(ctx, indexName, m.config.ReadBatchSize, scrollTime)
-	if err != nil {
-		return fmt.Errorf("failed to create scroll iterator: %w", err)
-	}
-	defer iterator.Close()
-
 	// Set up parallel batch processing
 	var wg sync.WaitGroup
 	batchChan := make(chan []interface{}, m.config.ChannelBufferSize) // Buffer for batches
@@ -215,92 +221,132 @@ func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.Elasticsearc
 		close(doneChan)
 	}()
 
-	// Process documents and create batches
-	var batch []interface{}
-	var batchCount int
+	// Use sliced scroll for parallel reading from a single index
+	scrollTime := "5m" // 5 minutes scroll time
+	numSlices := m.config.SlicedScrollCount
+	m.log.Infof("Using sliced scroll with %d slices for parallel reading from index %s", numSlices, indexName)
 
-	for {
-		// Check for errors from workers
-		select {
-		case err := <-errorChan:
-			close(batchChan)
-			return err
-		default:
-			// No errors, continue processing
-		}
+	// Create a wait group for scroll iterators
+	var scrollWg sync.WaitGroup
+	scrollErrorChan := make(chan error, numSlices) // Channel for scroll errors
 
-		// Get next document
-		doc, err := iterator.Next()
-		if err != nil {
-			close(batchChan)
-			return fmt.Errorf("error reading document: %w", err)
-		}
+	// Start a goroutine for each slice
+	for slice := 0; slice < numSlices; slice++ {
+		scrollWg.Add(1)
+		go func(sliceID int) {
+			defer scrollWg.Done()
 
-		// If no more documents, we're done
-		if doc == nil {
-			break
-		}
+			// Create a sliced scroll iterator
+			iterator, err := esClient.ScrollDocumentsSliced(ctx, indexName, m.config.ReadBatchSize, scrollTime, sliceID, numSlices)
+			if err != nil {
+				scrollErrorChan <- fmt.Errorf("failed to create scroll iterator for slice %d/%d: %w", sliceID, numSlices, err)
+				return
+			}
+			defer iterator.Close()
 
-		// Map document
-		mappedDoc, err := mapper.MapDocument(doc)
-		if err != nil {
-			close(batchChan)
-			return fmt.Errorf("error mapping document: %w", err)
-		}
+			// Process documents from this slice
+			var batch []interface{}
+			var batchCount int
 
-		// Add to batch
-		batch = append(batch, mappedDoc)
-		batchCount++
+			for {
+				// Check for context cancellation
+				select {
+				case <-ctx.Done():
+					scrollErrorChan <- context.Canceled
+					return
+				default:
+					// Continue processing
+				}
 
-		// Send batch if it reaches the write batch size
-		if batchCount >= m.config.WriteBatchSize {
-			select {
-			case batchChan <- batch:
-				// Batch sent to worker
-			case err := <-errorChan:
-				// Error from a worker
-				close(batchChan)
-				return err
-			case <-ctx.Done():
-				// Context cancelled
-				close(batchChan)
-				m.log.Info("Batch processing interrupted due to context cancellation")
-				return context.Canceled // Return context.Canceled for consistent error handling
+				// Get next document
+				doc, err := iterator.Next()
+				if err != nil {
+					scrollErrorChan <- fmt.Errorf("error reading document from slice %d/%d: %w", sliceID, numSlices, err)
+					return
+				}
+
+				// If no more documents in this slice, we're done
+				if doc == nil {
+					break
+				}
+
+				// Map document
+				mappedDoc, err := mapper.MapDocument(doc)
+				if err != nil {
+					scrollErrorChan <- fmt.Errorf("error mapping document from slice %d/%d: %w", sliceID, numSlices, err)
+					return
+				}
+
+				// Add to batch
+				batch = append(batch, mappedDoc)
+				batchCount++
+
+				// Send batch if it reaches the write batch size
+				if batchCount >= m.config.WriteBatchSize {
+					select {
+					case batchChan <- batch:
+						// Batch sent to worker
+					case <-ctx.Done():
+						// Context cancelled
+						scrollErrorChan <- context.Canceled
+						return
+					}
+
+					// Reset batch
+					batch = nil
+					batchCount = 0
+
+					// Add a small delay between batches to reduce contention
+					time.Sleep(5 * time.Millisecond)
+				}
 			}
 
-			// Reset batch
-			batch = nil
-			batchCount = 0
+			// Process any remaining documents in this slice
+			if len(batch) > 0 {
+				select {
+				case batchChan <- batch:
+					// Final batch sent to worker
+				case <-ctx.Done():
+					// Context cancelled
+					scrollErrorChan <- context.Canceled
+					return
+				}
+			}
 
-			// Add a small delay between batches to reduce contention
-			time.Sleep(5 * time.Millisecond)
-		}
+			m.log.Infof("Slice %d/%d completed reading", sliceID, numSlices)
+		}(slice)
 	}
 
-	// Process any remaining documents
-	if len(batch) > 0 {
+	// Wait for all scroll iterators to complete or for an error
+	go func() {
+		scrollWg.Wait()
+		close(batchChan) // Close batch channel when all readers are done
+		m.log.Info("All slices completed reading")
+	}()
+
+	// Monitor for errors from scroll iterators
+	var scrollError error
+	go func() {
 		select {
-		case batchChan <- batch:
-			// Final batch sent to worker
-		case err := <-errorChan:
-			// Error from a worker
-			close(batchChan)
-			return err
+		case err := <-scrollErrorChan:
+			scrollError = err
+			close(batchChan) // Close batch channel on error
+		case <-doneChan:
+			// All processing completed successfully
 		case <-ctx.Done():
 			// Context cancelled
+			scrollError = context.Canceled
 			close(batchChan)
-			m.log.Info("Final batch processing interrupted due to context cancellation")
-			return context.Canceled // Return context.Canceled for consistent error handling
 		}
-	}
-
-	// Close batch channel to signal workers to exit
-	close(batchChan)
+	}()
 
 	// Wait for all workers to finish or for an error
 	select {
 	case <-doneChan:
 		// All workers finished successfully
+		if scrollError != nil {
+			return scrollError
+		}
 	case err := <-errorChan:
 		// Error from a worker
 		return err
