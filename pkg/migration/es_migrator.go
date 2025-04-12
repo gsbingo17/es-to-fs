@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gsbingo17/es-to-mongodb/pkg/common"
 	"github.com/gsbingo17/es-to-mongodb/pkg/config"
 	"github.com/gsbingo17/es-to-mongodb/pkg/db"
 	"github.com/gsbingo17/es-to-mongodb/pkg/es"
@@ -69,56 +70,129 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 	}
 
 	// Create document mapper
-	mapper := es.NewDocumentMapper(m.config.DocumentMapping, m.log)
+	mapper := common.NewDocumentMapper(m.config.DocumentMapping, m.log)
 
-	// Process each index pattern
+	// Process index patterns concurrently
+	var patternWg sync.WaitGroup
+	// Use a semaphore to limit concurrent pattern processing
+	// Default to 2 concurrent patterns, but this could be configurable
+	concurrentPatterns := 2
+	patternSemaphore := make(chan struct{}, concurrentPatterns)
+
+	// Channel to collect errors from goroutines
+	errorChan := make(chan error, len(m.config.Source.Indices))
+
+	m.log.Infof("Processing %d index patterns concurrently with limit of %d", len(m.config.Source.Indices), concurrentPatterns)
+
+	// Process each index pattern in parallel
 	for _, indexPattern := range m.config.Source.Indices {
-		// Get matching indices
-		m.log.Infof("Finding indices matching pattern: %s", indexPattern)
-		indices, err := esClient.GetIndices(ctx, indexPattern)
-		if err != nil {
-			return fmt.Errorf("failed to get indices for pattern %s: %w", indexPattern, err)
-		}
+		patternWg.Add(1)
+		// Acquire semaphore
+		patternSemaphore <- struct{}{}
 
-		m.log.Infof("Found %d indices matching pattern %s: %v", len(indices), indexPattern, indices)
+		// Start processing pattern in a goroutine
+		go func(pattern string) {
+			defer patternWg.Done()
+			defer func() { <-patternSemaphore }() // Release semaphore when done
 
-		// Process indices concurrently with a semaphore
-		var wg sync.WaitGroup
-		semaphore := make(chan struct{}, m.config.ConcurrentIndices)
+			// Create a context with timeout for getting indices
+			// 30 second timeout for getting indices
+			indexCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
 
-		for _, index := range indices {
-			wg.Add(1)
-			// Acquire semaphore
-			semaphore <- struct{}{}
-
-			// Start migration in a goroutine
-			go func(indexName string) {
-				defer wg.Done()
-				defer func() { <-semaphore }() // Release semaphore when done
-
-				// Get target collection name
-				targetCollection := m.config.GetTargetCollection(indexName)
-				m.log.Infof("Migrating index %s to collection %s", indexName, targetCollection)
-
-				// Migrate the index
-				if err := m.migrateIndex(ctx, esClient, mongoClient, indexName, targetCollection, mapper); err != nil {
-					if err == context.Canceled {
-						m.log.Infof("Migration of index %s interrupted due to user interrupt (Ctrl+C)", indexName)
-					} else {
-						m.log.Errorf("Error migrating index %s: %v", indexName, err)
-					}
-					// Continue with other indices even if one fails
+			// Get matching indices
+			m.log.Infof("Finding indices matching pattern: %s", pattern)
+			indices, err := esClient.GetIndices(indexCtx, pattern)
+			if err != nil {
+				if err == context.DeadlineExceeded {
+					errorChan <- fmt.Errorf("timeout getting indices for pattern %s: %w", pattern, err)
+				} else if err == context.Canceled {
+					errorChan <- fmt.Errorf("getting indices for pattern %s was canceled: %w", pattern, err)
+				} else {
+					errorChan <- fmt.Errorf("failed to get indices for pattern %s: %w", pattern, err)
 				}
-			}(index)
-		}
+				return
+			}
 
-		// Wait for all migrations to complete
-		wg.Wait()
+			m.log.Infof("Found %d indices matching pattern %s: %v", len(indices), pattern, indices)
+
+			// Process indices concurrently with a semaphore
+			var wg sync.WaitGroup
+			semaphore := make(chan struct{}, m.config.ConcurrentIndices)
+
+			// Channel for index-level errors
+			indexErrorChan := make(chan error, len(indices))
+
+			for _, index := range indices {
+				// Check if the parent context is canceled
+				select {
+				case <-ctx.Done():
+					indexErrorChan <- ctx.Err()
+					return
+				default:
+					// Continue processing
+				}
+
+				wg.Add(1)
+				// Acquire semaphore
+				semaphore <- struct{}{}
+
+				// Start migration in a goroutine
+				go func(indexName string) {
+					defer wg.Done()
+					defer func() { <-semaphore }() // Release semaphore when done
+
+					// Get target collection name
+					targetCollection := m.config.GetTargetCollection(indexName)
+					m.log.Infof("Migrating index %s to collection %s", indexName, targetCollection)
+
+					// Migrate the index
+					if err := m.migrateIndex(ctx, esClient, mongoClient, indexName, targetCollection, mapper); err != nil {
+						if err == context.Canceled {
+							m.log.Infof("Migration of index %s interrupted due to user interrupt (Ctrl+C)", indexName)
+							indexErrorChan <- err
+						} else {
+							m.log.Errorf("Error migrating index %s: %v", indexName, err)
+							// Continue with other indices even if one fails
+						}
+					}
+				}(index)
+			}
+
+			// Wait for all migrations to complete
+			wg.Wait()
+
+			// Check for index-level errors
+			select {
+			case err := <-indexErrorChan:
+				errorChan <- fmt.Errorf("error processing pattern %s: %w", pattern, err)
+			default:
+				// No errors
+			}
+
+		}(indexPattern)
+	}
+
+	// Wait for all pattern processing to complete
+	patternWg.Wait()
+	close(errorChan)
+
+	// Check for errors
+	var errs []error
+	for err := range errorChan {
+		errs = append(errs, err)
 	}
 
 	// Close MongoDB connection
 	if err := mongoClient.Close(ctx); err != nil {
 		m.log.Errorf("Error closing MongoDB connection: %v", err)
+		errs = append(errs, fmt.Errorf("error closing MongoDB connection: %w", err))
+	}
+
+	// Return the first error if any
+	if len(errs) > 0 {
+		m.log.Errorf("Migration completed with %d errors", len(errs))
+		return errs[0]
 	}
 
 	m.log.Info("Migration completed successfully")
@@ -126,7 +200,7 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 }
 
 // migrateIndex migrates a single Elasticsearch index to a MongoDB collection
-func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.ElasticsearchClient, mongoClient *db.MongoDB, indexName, collectionName string, mapper *es.DocumentMapper) error {
+func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.ElasticsearchClient, mongoClient *db.MongoDB, indexName, collectionName string, mapper *common.DocumentMapper) error {
 	// Get MongoDB collection
 	collection := mongoClient.GetCollection(collectionName)
 
