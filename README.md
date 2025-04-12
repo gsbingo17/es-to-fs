@@ -338,17 +338,22 @@ The tool supports different types of index pattern matching:
 
 The application implements parallelism at multiple levels:
 
-1. **Index-Level Parallelism**:
+1. **Pattern-Level Parallelism**:
+   - Multiple index patterns are processed concurrently
+   - Default limit of 2 concurrent patterns
+   - Improves overall migration speed when using multiple index patterns
+
+2. **Index-Level Parallelism**:
    - Multiple indices are processed concurrently
    - Controlled by the `concurrentIndices` parameter
 
-2. **Intra-Index Parallelism (Sliced Scroll)**:
+3. **Intra-Index Parallelism (Sliced Scroll)**:
    - Each index is divided into multiple slices that are read in parallel
    - Uses Elasticsearch's built-in sliced scroll feature
    - Controlled by the `slicedScrollCount` parameter
    - Significantly improves read performance for large indices
 
-3. **Batch-Level Parallelism**:
+4. **Batch-Level Parallelism**:
    - Documents are processed in batches by multiple workers
    - Controlled by the `migrationWorkers` parameter
 
@@ -363,8 +368,9 @@ The application includes a sophisticated retry mechanism:
 ## Project Structure
 
 - `cmd/migrate/`: Contains the main application entry point
+- `pkg/common/`: Common utilities and shared functionality
 - `pkg/config/`: Configuration handling
 - `pkg/db/`: MongoDB connection and operations
-- `pkg/es/`: Elasticsearch client and document mapping
+- `pkg/es/`: Elasticsearch client
 - `pkg/logger/`: Logging utilities
-- `pkg/migration/`: Migration logic
+- `pkg/migration/`: Migration logic and implementation
