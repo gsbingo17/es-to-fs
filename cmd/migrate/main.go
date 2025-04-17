@@ -42,15 +42,29 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle interrupt signals
+	// Handle interrupt signals with graceful shutdown
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-signalChan
-		log.Info("Received interrupt signal. Shutting down...")
+		sig := <-signalChan
+		log.Infof("Received signal %s. Initiating graceful shutdown...", sig)
+
+		// Create a context with timeout for graceful shutdown
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+
+		// Cancel the main context to stop ongoing operations
 		cancel()
-		// Give some time for graceful shutdown
-		time.Sleep(2 * time.Second)
+
+		// Wait for graceful shutdown or timeout
+		select {
+		case <-time.After(25 * time.Second):
+			log.Warn("Graceful shutdown is taking too long, forcing exit...")
+		case <-shutdownCtx.Done():
+			// Context timeout - just exit
+		}
+
+		log.Info("Shutdown complete")
 		os.Exit(0)
 	}()
 
