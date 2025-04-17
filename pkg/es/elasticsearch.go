@@ -28,6 +28,8 @@ type TLSConfig struct {
 	CACertPath             string // Path to CA certificate file
 	SkipVerify             bool   // Skip server certificate verification
 	CertificateFingerprint string // Certificate fingerprint for verification
+	ConnectionTimeout      int    // Connection timeout in seconds
+	ResponseTimeout        int    // Response timeout in seconds
 }
 
 // NewElasticsearchClient creates a new Elasticsearch client
@@ -47,6 +49,27 @@ func NewElasticsearchClient(addresses []string, username, password, apiKey strin
 		log.Info("Using username/password authentication for Elasticsearch")
 	} else {
 		log.Info("No authentication provided for Elasticsearch")
+	}
+
+	// Configure timeouts
+	connectionTimeout := 30 * time.Second
+	responseTimeout := 60 * time.Second
+
+	if tlsConfig != nil {
+		if tlsConfig.ConnectionTimeout > 0 {
+			connectionTimeout = time.Duration(tlsConfig.ConnectionTimeout) * time.Second
+		}
+
+		if tlsConfig.ResponseTimeout > 0 {
+			responseTimeout = time.Duration(tlsConfig.ResponseTimeout) * time.Second
+		}
+	}
+
+	// Create transport with configured timeouts
+	transport := &http.Transport{
+		MaxIdleConnsPerHost:   10,
+		ResponseHeaderTimeout: responseTimeout,
+		DialContext:           (&net.Dialer{Timeout: connectionTimeout}).DialContext,
 	}
 
 	// Configure TLS if enabled
@@ -75,19 +98,16 @@ func NewElasticsearchClient(addresses []string, username, password, apiKey strin
 			log.Info("Added CA certificate to configuration")
 		}
 
-		// Create transport with TLS configuration
-		transport := &http.Transport{
-			MaxIdleConnsPerHost:   10,
-			ResponseHeaderTimeout: time.Second,
-			DialContext:           (&net.Dialer{Timeout: time.Second}).DialContext,
-			TLSClientConfig:       tlsClientConfig,
-		}
-
-		// Set transport in the config
-		cfg.Transport = transport
+		// Add TLS config to transport
+		transport.TLSClientConfig = tlsClientConfig
 
 		log.Info("TLS configuration completed")
+	} else {
+		log.Info("Using non-TLS connection with configured timeouts")
 	}
+
+	// Set transport in the config
+	cfg.Transport = transport
 
 	// Create Elasticsearch client
 	client, err := elasticsearch.NewClient(cfg)
@@ -448,15 +468,24 @@ func (s *ScrollIterator) fetchNextBatch() error {
 	return nil
 }
 
-// Close closes the scroll
+// Close closes the scroll and releases resources
 func (s *ScrollIterator) Close() error {
+	// Skip if scrollID is empty (already closed)
+	if s.scrollID == "" {
+		return nil
+	}
+
+	// Create a context with timeout for closing
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	// Create a request to clear scroll
 	req := esapi.ClearScrollRequest{
 		ScrollID: []string{s.scrollID},
 	}
 
 	// Execute the request
-	res, err := req.Do(s.ctx, s.client)
+	res, err := req.Do(closeCtx, s.client)
 	if err != nil {
 		return fmt.Errorf("failed to clear scroll: %w", err)
 	}
@@ -465,6 +494,22 @@ func (s *ScrollIterator) Close() error {
 	if res.IsError() {
 		return fmt.Errorf("failed to clear scroll: %s", res.String())
 	}
+
+	// Mark as closed by clearing the scrollID
+	s.scrollID = ""
+
+	return nil
+}
+
+// Close closes the Elasticsearch client and releases resources
+func (e *ElasticsearchClient) Close() error {
+	// The underlying go-elasticsearch client doesn't have a built-in Close method
+	// Log that we're closing the client
+	e.log.Info("Closing Elasticsearch client")
+
+	// Unfortunately, we can't directly access the underlying http.Transport
+	// because the client.Transport is a custom estransport.Transport type
+	// We'll rely on Go's garbage collection to clean up resources
 
 	return nil
 }

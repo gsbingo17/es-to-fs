@@ -38,7 +38,7 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 	// Connect to Elasticsearch
 	m.log.Infof("Connecting to Elasticsearch at %v", m.config.Source.Addresses)
 
-	// Create TLS configuration if TLS is enabled
+	// Create TLS configuration with timeout settings
 	var tlsConfig *es.TLSConfig
 	if m.config.Source.TLS {
 		tlsConfig = &es.TLSConfig{
@@ -46,8 +46,19 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 			CACertPath:             m.config.Source.CACertPath,
 			SkipVerify:             m.config.Source.SkipVerify,
 			CertificateFingerprint: m.config.Source.CertificateFingerprint,
+			ConnectionTimeout:      m.config.Source.ConnectionTimeout,
+			ResponseTimeout:        m.config.Source.ResponseTimeout,
 		}
 		m.log.Info("TLS is enabled for Elasticsearch connection")
+	} else {
+		// Even without TLS, we still need to pass timeout settings
+		tlsConfig = &es.TLSConfig{
+			Enabled:           false,
+			ConnectionTimeout: m.config.Source.ConnectionTimeout,
+			ResponseTimeout:   m.config.Source.ResponseTimeout,
+		}
+		m.log.Infof("Using non-TLS connection with timeouts: connection=%ds, response=%ds",
+			m.config.Source.ConnectionTimeout, m.config.Source.ResponseTimeout)
 	}
 
 	esClient, err := es.NewElasticsearchClient(
@@ -61,6 +72,12 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to Elasticsearch: %w", err)
 	}
+	// Add defer for Elasticsearch client cleanup
+	defer func() {
+		if err := esClient.Close(); err != nil {
+			m.log.Errorf("Error closing Elasticsearch client: %v", err)
+		}
+	}()
 
 	// Connect to MongoDB
 	m.log.Infof("Connecting to MongoDB at %s", m.config.Target.ConnectionString)
@@ -201,6 +218,8 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 
 // migrateIndex migrates a single Elasticsearch index to a MongoDB collection
 func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.ElasticsearchClient, mongoClient *db.MongoDB, indexName, collectionName string, mapper *common.DocumentMapper) error {
+	// Use sync.Once to ensure batchChan is closed exactly once
+	var closeOnce sync.Once
 	// Get MongoDB collection
 	collection := mongoClient.GetCollection(collectionName)
 
@@ -394,8 +413,10 @@ func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.Elasticsearc
 	// Wait for all scroll iterators to complete or for an error
 	go func() {
 		scrollWg.Wait()
-		close(batchChan) // Close batch channel when all readers are done
-		m.log.Info("All slices completed reading")
+		closeOnce.Do(func() {
+			close(batchChan) // Close batch channel when all readers are done
+			m.log.Info("All slices completed reading")
+		})
 	}()
 
 	// Monitor for errors from scroll iterators
@@ -404,13 +425,19 @@ func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.Elasticsearc
 		select {
 		case err := <-scrollErrorChan:
 			scrollError = err
-			close(batchChan) // Close batch channel on error
+			closeOnce.Do(func() {
+				close(batchChan) // Close batch channel on error
+				m.log.Info("Closing batch channel due to scroll error")
+			})
 		case <-doneChan:
 			// All processing completed successfully
 		case <-ctx.Done():
 			// Context cancelled
 			scrollError = context.Canceled
-			close(batchChan)
+			closeOnce.Do(func() {
+				close(batchChan) // Close batch channel on context cancellation
+				m.log.Info("Closing batch channel due to context cancellation")
+			})
 		}
 	}()
 

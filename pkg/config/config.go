@@ -60,6 +60,10 @@ type SourceConfig struct {
 	CACertPath             string `json:"caCertPath"`             // Path to CA certificate file for server verification
 	SkipVerify             bool   `json:"skipVerify"`             // Skip server certificate verification (not recommended for production)
 	CertificateFingerprint string `json:"certificateFingerprint"` // Certificate fingerprint for verification
+
+	// Timeout configuration
+	ConnectionTimeout int `json:"connectionTimeout"` // Connection timeout in seconds (default: 30)
+	ResponseTimeout   int `json:"responseTimeout"`   // Response timeout in seconds (default: 60)
 }
 
 // TargetConfig represents the target MongoDB configuration
@@ -159,6 +163,15 @@ func LoadConfig(configPath string) (*Config, error) {
 	// Set default values for default mapping
 	if config.DefaultMapping.Type == "" {
 		config.DefaultMapping.Type = "direct" // Default to direct mapping
+	}
+
+	// Set default values for timeouts
+	if config.Source.ConnectionTimeout <= 0 {
+		config.Source.ConnectionTimeout = 30 // Default to 30 seconds
+	}
+
+	if config.Source.ResponseTimeout <= 0 {
+		config.Source.ResponseTimeout = 60 // Default to 60 seconds
 	}
 
 	return &config, nil
