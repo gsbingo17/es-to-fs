@@ -1,6 +1,6 @@
 # Elasticsearch to MongoDB Migration Tool
 
-This Go application migrates data from Elasticsearch indices to MongoDB collections. It performs a one-time migration of data from Elasticsearch to MongoDB with advanced features for mapping and transformation.
+This Go application migrates data from Elasticsearch indices to MongoDB collections. It performs a one-time migration of data from Elasticsearch to MongoDB with advanced features for mapping and transformation. It especially enables migration from Elasticsearch to Firestore with MongoDB compatibility.
 
 ## Prerequisites
 
