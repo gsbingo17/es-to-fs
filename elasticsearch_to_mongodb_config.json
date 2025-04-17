@@ -1,24 +1,31 @@
 {
   "source": {
-    "addresses": ["http://localhost:9200"],
-    "username": "",
-    "password": "",
+    "addresses": ["https://localhost:9200"],
+    "username": "elastic",
+    "password": "password",
     "apiKey": "",
-    "indices": ["my-index"],
-    "tls": false,
+    "indices": ["my-index","index-1*"],
+    "tls": true,
     "caCertPath": "",
-    "skipVerify": false,
-    "certificateFingerprint": ""
+    "skipVerify": true,
+    "certificateFingerprint": "",
+    "connectionTimeout": 30,
+    "responseTimeout": 60
   },
   "target": {
     "connectionString": "mongodb://localhost:27017/?replicaSet=rs0",
-    "database": "es_migration"
+    "database": "es"
   },
   "indexMappings": [
     {
       "sourceIndex": "my-index",
-      "targetCollection": "my-index",
+      "targetCollection": "my_collection",
       "indexPatternType": "exact"
+    },
+    {
+      "sourceIndex": "index-1*",
+      "targetCollection": "collection_1",
+      "indexPatternType": "wildcard"
     }
   ],
   "defaultMapping": {
