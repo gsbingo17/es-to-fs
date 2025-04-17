@@ -20,6 +20,7 @@ This Go application migrates data from Elasticsearch indices to MongoDB collecti
 2. Build the application:
 
    ```bash
+   go mod tidy
    go build -o migrate ./cmd/migrate
    ```
 
