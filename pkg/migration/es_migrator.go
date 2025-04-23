@@ -93,7 +93,7 @@ func (m *ESMigrator) Start(ctx context.Context) error {
 	var patternWg sync.WaitGroup
 	// Use a semaphore to limit concurrent pattern processing
 	// Default to 2 concurrent patterns, but this could be configurable
-	concurrentPatterns := 2
+	concurrentPatterns := 3
 	patternSemaphore := make(chan struct{}, concurrentPatterns)
 
 	// Channel to collect errors from goroutines
@@ -223,8 +223,18 @@ func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.Elasticsearc
 	// Get MongoDB collection
 	collection := mongoClient.GetCollection(collectionName)
 
+	// Get query filter for this index if exists
+	var queryFilter map[string]interface{}
+	for _, filter := range m.config.Source.QueryFilters {
+		if filter.Index == indexName {
+			queryFilter = filter.Query
+			m.log.Infof("Using query filter for index %s: %v", indexName, queryFilter)
+			break
+		}
+	}
+
 	// Count documents in the index
-	totalCount, err := esClient.CountDocuments(ctx, indexName)
+	totalCount, err := esClient.CountDocuments(ctx, indexName, queryFilter)
 	if err != nil {
 		return fmt.Errorf("failed to count documents in index %s: %w", indexName, err)
 	}
@@ -271,7 +281,7 @@ func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.Elasticsearc
 			for batch := range batchChan {
 				// Use RetryManager to handle retries with batch splitting
 				err := retryManager.RetryWithSplit(ctx, batch, indexName, func(b []interface{}) error {
-					return processESBatch(ctx, collection, b, false) // Use insert by default
+					return processESBatch(ctx, collection, b, m.config.UseUpsert) // Use upsert if configured
 				})
 				if err != nil {
 					select {
@@ -329,8 +339,8 @@ func (m *ESMigrator) migrateIndex(ctx context.Context, esClient *es.Elasticsearc
 		go func(sliceID int) {
 			defer scrollWg.Done()
 
-			// Create a sliced scroll iterator
-			iterator, err := esClient.ScrollDocumentsSliced(ctx, indexName, m.config.ReadBatchSize, scrollTime, sliceID, numSlices)
+			// Create a sliced scroll iterator with query filter
+			iterator, err := esClient.ScrollDocumentsSliced(ctx, indexName, m.config.ReadBatchSize, scrollTime, sliceID, numSlices, queryFilter)
 			if err != nil {
 				scrollErrorChan <- fmt.Errorf("failed to create scroll iterator for slice %d/%d: %w", sliceID, numSlices, err)
 				return

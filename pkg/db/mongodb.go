@@ -23,8 +23,8 @@ func NewMongoDB(connectionString, databaseName string, log *logger.Logger) (*Mon
 	// Set client options
 	clientOptions := options.Client().
 		ApplyURI(connectionString).
-		SetMaxPoolSize(256).
-		SetMinPoolSize(128).
+		SetMaxPoolSize(128).
+		SetMinPoolSize(5).
 		SetConnectTimeout(30 * time.Second).
 		SetSocketTimeout(120 * time.Second)
 

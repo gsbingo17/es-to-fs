@@ -26,12 +26,13 @@ type Config struct {
 	DocumentMapping common.MappingConfig `json:"documentMapping"`
 
 	// Parameters for migration
-	ReadBatchSize     int `json:"readBatchSize"`     // Number of documents to read in a batch during migration
-	WriteBatchSize    int `json:"writeBatchSize"`    // Number of documents to write in a batch during migration
-	ChannelBufferSize int `json:"channelBufferSize"` // Size of channel buffer for batches during migration
-	MigrationWorkers  int `json:"migrationWorkers"`  // Number of worker goroutines for batch processing
-	ConcurrentIndices int `json:"concurrentIndices"` // Number of indices to process concurrently
-	SlicedScrollCount int `json:"slicedScrollCount"` // Number of slices for parallel scrolling within a single index
+	ReadBatchSize     int  `json:"readBatchSize"`     // Number of documents to read in a batch during migration
+	WriteBatchSize    int  `json:"writeBatchSize"`    // Number of documents to write in a batch during migration
+	ChannelBufferSize int  `json:"channelBufferSize"` // Size of channel buffer for batches during migration
+	MigrationWorkers  int  `json:"migrationWorkers"`  // Number of worker goroutines for batch processing
+	ConcurrentIndices int  `json:"concurrentIndices"` // Number of indices to process concurrently
+	SlicedScrollCount int  `json:"slicedScrollCount"` // Number of slices for parallel scrolling within a single index
+	UseUpsert         bool `json:"useUpsert"`         // Whether to always use upsert operations instead of insert
 
 	// Retry configuration
 	RetryConfig RetryConfig `json:"retryConfig"` // Configuration for retry mechanisms
@@ -47,6 +48,12 @@ type RetryConfig struct {
 	ConvertInvalidIds    bool `json:"convertInvalidIds"`    // Convert invalid _id types to string
 }
 
+// QueryFilter represents a query filter for an Elasticsearch index
+type QueryFilter struct {
+	Index string                 `json:"index"` // Elasticsearch index name
+	Query map[string]interface{} `json:"query"` // Elasticsearch query in JSON format
+}
+
 // SourceConfig represents the source Elasticsearch configuration
 type SourceConfig struct {
 	Addresses []string `json:"addresses"` // Elasticsearch addresses
@@ -54,6 +61,9 @@ type SourceConfig struct {
 	Password  string   `json:"password"`  // Elasticsearch password
 	APIKey    string   `json:"apiKey"`    // Elasticsearch API key (alternative to username/password)
 	Indices   []string `json:"indices"`   // Indices to migrate (can use patterns like "my-index-*")
+
+	// Query filters for specific indices
+	QueryFilters []QueryFilter `json:"queryFilters,omitempty"` // Optional query filters for specific indices
 
 	// HTTPS configuration
 	TLS                    bool   `json:"tls"`                    // Enable TLS/HTTPS (default: false)

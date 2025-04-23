@@ -102,10 +102,114 @@ Here's a basic example:
 - **password**: Elasticsearch password (if authentication is required).
 - **apiKey**: Elasticsearch API key (alternative to username/password).
 - **indices**: Array of index names or patterns to migrate.
+- **queryFilters**: Array of query filters to selectively migrate documents from specific indices.
+  - **index**: The specific index to apply the filter to.
+  - **query**: Elasticsearch query in JSON format to filter documents (supports all Elasticsearch query DSL).
 - **tls**: Enable TLS/HTTPS (default: false).
 - **caCertPath**: Path to CA certificate file for server verification.
 - **skipVerify**: Skip server certificate verification (not recommended for production).
 - **certificateFingerprint**: Certificate fingerprint for verification (SHA256 hex fingerprint).
+
+### Using Query Filters
+
+The migration tool supports selective migration of documents using Elasticsearch query filters. This allows you to migrate only a subset of documents that match specific criteria, which can be useful for:
+
+- Migrating only recent data
+- Excluding certain document types
+- Migrating documents with specific field values
+- Implementing time-based or incremental migrations
+
+#### Query Filter Configuration
+
+Query filters are specified in the `queryFilters` array within the source configuration:
+
+```json
+"queryFilters": [
+  {
+    "index": "my-index",
+    "query": {
+      "range": {
+        "timestamp": {
+          "lt": "2025-04-23"
+        }
+      }
+    }
+  }
+]
+```
+
+Each query filter consists of:
+- **index**: The specific index to apply the filter to.
+- **query**: An Elasticsearch query in JSON format.
+
+#### Supported Query Types
+
+The query filter supports all Elasticsearch Query DSL formats, including:
+
+- **Term queries**: Match documents with exact field values
+  ```json
+  { "term": { "status": "active" } }
+  ```
+
+- **Range queries**: Match documents with field values in a specific range
+  ```json
+  { "range": { "age": { "gte": 18, "lt": 30 } } }
+  ```
+
+- **Boolean queries**: Combine multiple queries with logical operators
+  ```json
+  {
+    "bool": {
+      "must": [
+        { "term": { "status": "active" } }
+      ],
+      "must_not": [
+        { "term": { "deleted": true } }
+      ]
+    }
+  }
+  ```
+
+- **Exists queries**: Match documents where a field exists
+  ```json
+  { "exists": { "field": "email" } }
+  ```
+
+#### Example: Time-Based Migration
+
+To migrate only documents created before a specific date:
+
+```json
+"queryFilters": [
+  {
+    "index": "logs-*",
+    "query": {
+      "range": {
+        "created_at": {
+          "lt": "2025-01-01"
+        }
+      }
+    }
+  }
+]
+```
+
+#### Example: Selective Field-Based Migration
+
+To migrate only documents with a specific status:
+
+```json
+"queryFilters": [
+  {
+    "index": "orders",
+    "query": {
+      "term": {
+        "status": "completed"
+      }
+    }
+  }
+]
+```
 
 ### Target Configuration
 - **connectionString**: MongoDB connection string.
@@ -271,6 +375,10 @@ Benefits of proper conversion:
 - **migrationWorkers**: Number of worker goroutines for batch processing.
 - **concurrentIndices**: Number of indices to process concurrently.
 - **slicedScrollCount**: Number of slices for parallel reading within a single index (default: 4).
+- **useUpsert**: Whether to always use upsert operations instead of insert operations (default: false). When set to true, the tool will use MongoDB's upsert operation for all documents, which updates existing documents if they exist or inserts them if they don't. This can be useful when:
+  - Rerunning migrations that might contain duplicate documents
+  - Performing incremental migrations where some documents may already exist
+  - Ensuring idempotent operations that can be safely retried
 
 ### Retry Configuration
 - **retryConfig**: Configuration for retry mechanisms.

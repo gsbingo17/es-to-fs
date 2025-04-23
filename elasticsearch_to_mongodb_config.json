@@ -2,9 +2,21 @@
   "source": {
     "addresses": ["https://localhost:9200"],
     "username": "elastic",
-    "password": "password",
+    "password": "5rQN6GSyK3fHRQvA2N5O",
     "apiKey": "",
-    "indices": ["my-index","index-1*"],
+    "indices": ["my-index"],
+    "queryFilters": [
+      {
+        "index": "my-index",
+        "query": {
+          "range": {
+            "timestamp": {
+              "lt": "2025-04-23"
+            }
+          }
+        }
+      }
+    ],
     "tls": true,
     "caCertPath": "",
     "skipVerify": true,
@@ -14,18 +26,13 @@
   },
   "target": {
     "connectionString": "mongodb://localhost:27017/?replicaSet=rs0",
-    "database": "es"
+    "database": "my-db01"
   },
   "indexMappings": [
     {
       "sourceIndex": "my-index",
-      "targetCollection": "my_collection",
+      "targetCollection": "colletion_abc",
       "indexPatternType": "exact"
-    },
-    {
-      "sourceIndex": "index-1*",
-      "targetCollection": "collection_1",
-      "indexPatternType": "wildcard"
     }
   ],
   "defaultMapping": {
@@ -57,6 +64,7 @@
   "migrationWorkers": 5,
   "concurrentIndices": 2,
   "slicedScrollCount": 4,
+  "useUpsert": false,
   "retryConfig": {
     "maxRetries": 5,
     "baseDelayMs": 100,

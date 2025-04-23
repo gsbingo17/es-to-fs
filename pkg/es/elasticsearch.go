@@ -209,10 +209,27 @@ func (e *ElasticsearchClient) GetMappings(ctx context.Context, index string) (ma
 }
 
 // CountDocuments returns the number of documents in an index
-func (e *ElasticsearchClient) CountDocuments(ctx context.Context, index string) (int64, error) {
+func (e *ElasticsearchClient) CountDocuments(ctx context.Context, index string, query map[string]interface{}) (int64, error) {
 	// Create a request to count documents
 	req := esapi.CountRequest{
 		Index: []string{index},
+	}
+
+	// Add query if provided
+	if query != nil && len(query) > 0 {
+		// Create the query body
+		queryBody := map[string]interface{}{
+			"query": query,
+		}
+
+		// Convert to JSON
+		queryJSON, err := json.Marshal(queryBody)
+		if err != nil {
+			return 0, fmt.Errorf("failed to marshal query: %w", err)
+		}
+
+		// Set the request body
+		req.Body = strings.NewReader(string(queryJSON))
 	}
 
 	// Execute the request
@@ -299,21 +316,43 @@ func (e *ElasticsearchClient) ScrollDocuments(ctx context.Context, index string,
 }
 
 // ScrollDocumentsSliced scrolls through documents in an index using sliced scrolling for parallel processing
-func (e *ElasticsearchClient) ScrollDocumentsSliced(ctx context.Context, index string, batchSize int, scrollTime string, sliceID, maxSlices int) (*ScrollIterator, error) {
-	// Create the sliced query
-	sliceQuery := fmt.Sprintf(`{
-		"slice": {
-			"id": %d,
-			"max": %d
-		},
-		"query": {"match_all": {}}
-	}`, sliceID, maxSlices)
+func (e *ElasticsearchClient) ScrollDocumentsSliced(ctx context.Context, index string, batchSize int, scrollTime string, sliceID, maxSlices int, query map[string]interface{}) (*ScrollIterator, error) {
+	// Create the query body
+	var queryBody map[string]interface{}
+
+	if query == nil || len(query) == 0 {
+		// Use match_all if no query provided
+		queryBody = map[string]interface{}{
+			"slice": map[string]interface{}{
+				"id":  sliceID,
+				"max": maxSlices,
+			},
+			"query": map[string]interface{}{
+				"match_all": map[string]interface{}{},
+			},
+		}
+	} else {
+		// Combine user query with slice
+		queryBody = map[string]interface{}{
+			"slice": map[string]interface{}{
+				"id":  sliceID,
+				"max": maxSlices,
+			},
+			"query": query,
+		}
+	}
+
+	// Convert to JSON
+	queryJSON, err := json.Marshal(queryBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query for slice %d/%d: %w", sliceID, maxSlices, err)
+	}
 
 	// Use the low-level API to perform a search with scroll
 	req := esapi.SearchRequest{
 		Index: []string{index},
 		Size:  &batchSize,
-		Body:  strings.NewReader(sliceQuery),
+		Body:  strings.NewReader(string(queryJSON)),
 	}
 
 	// Convert scrollTime string to time.Duration

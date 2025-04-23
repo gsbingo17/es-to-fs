@@ -106,6 +106,19 @@ Create a configuration file named `elasticsearch_to_firestore_config.json` with 
   "password": "your-password",
   "apiKey": "",
   "indices": ["index-to-migrate"],
+  "queryFilters": [
+    {
+      "index": "my-index",
+      "query": {
+        "range": {
+          "timestamp": {
+            "gte": "2023-01-01",
+            "lt": "2024-01-01"
+          }
+        }
+      }
+    }
+  ],
   "tls": true,
   "caCertPath": "",
   "skipVerify": true,
@@ -119,6 +132,9 @@ Create a configuration file named `elasticsearch_to_firestore_config.json` with 
 - `username` and `password`: Your Elasticsearch credentials
 - `apiKey`: Alternative to username/password (leave empty if using username/password)
 - `indices`: Array of index names or patterns to migrate
+- `queryFilters`: Optional array of query filters to apply to specific indices
+  - `index`: The index name to apply the filter to
+  - `query`: Elasticsearch query in JSON format (supports all Elasticsearch query DSL)
 - `tls`: Set to `true` if your Elasticsearch uses HTTPS
 - `skipVerify`: Set to `true` to skip certificate verification (not recommended for production)
 - `connectionTimeout`: Connection timeout in seconds
@@ -180,7 +196,8 @@ Create a configuration file named `elasticsearch_to_firestore_config.json` with 
 "channelBufferSize": 10,
 "migrationWorkers": 64,
 "concurrentIndices": 4,
-"slicedScrollCount": 4
+"slicedScrollCount": 4,
+"useUpsert": true
 ```
 
 - `readBatchSize`: Number of documents to read in each batch
@@ -189,6 +206,7 @@ Create a configuration file named `elasticsearch_to_firestore_config.json` with 
 - `migrationWorkers`: Number of parallel workers for writing documents
 - `concurrentIndices`: Number of indices to process concurrently
 - `slicedScrollCount`: Number of parallel slices for reading from a single index
+- `useUpsert`: Whether to always use upsert operations instead of insert (useful for resuming migrations or when documents may already exist in the target)
 
 #### Retry Configuration
 
